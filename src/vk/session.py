@@ -4,7 +4,7 @@ import urllib
 from json import loads
 from re import search
 
-import requests
+import httpx
 
 from .api import APINamespace
 from .exceptions import ErrorCodes, VkAPIError, VkAuthError
@@ -32,19 +32,19 @@ class APIBase:
     def __init__(self, timeout=10, proxy=None):
         self.timeout = timeout
 
-        self.session = requests.Session()
-        self.session.proxies = {'http': proxy, 'https': proxy}
-        self.session.headers['Accept'] = 'application/json'
-        self.session.headers['Content-Type'] = 'application/x-www-form-urlencoded'
+        self.session = httpx.AsyncClient(
+            proxies={'http://': proxy, 'https://': proxy},
+            headers={'Accept': 'application/json', 'Content-Type': 'application/x-www-form-urlencoded'},
+        )
 
-    def send(self, request):
+    async def send(self, request):
 
         logger.debug('Prepare API Method request')
 
         self.prepare_request(request)
 
         method_url = self.API_URL + request.method
-        response = self.session.post(method_url, request.method_params, timeout=self.timeout)
+        response = await self.session.post(method_url, data=request.method_params, timeout=self.timeout)
 
         # todo Replace with something less exceptional
         response.raise_for_status()
@@ -233,12 +233,13 @@ class UserAPI(API):
                 raise VkAuthError(description)
             response.raise_for_status()
 
-    def get_access_token(self):
-        auth_session = requests.Session()
-        auth_session.headers['Origin'] = 'https://oauth.vk.com'
+    async def get_access_token(self):
+        auth_session = httpx.AsyncClient(headers={'Origin': 'https://oauth.vk.com'})
 
-        if self.login(auth_session):
-            return self.authorize(auth_session)
+        login_result = await self.login(auth_session)
+
+        if login_result:
+            return await self.authorize(auth_session)
 
     def get_login_form_data(self, response):
         return {
@@ -249,17 +250,17 @@ class UserAPI(API):
             'pass': self.user_password,
         }
 
-    def login(self, auth_session, login_response=None):
+    async def login(self, auth_session, login_response=None):
         if not login_response:
             logger.debug('Start of the login process')
             # Get login page
-            login_page_response = auth_session.get(self.AUTHORIZE_URL, params=self.get_auth_params())
+            login_page_response = await auth_session.get(self.AUTHORIZE_URL, params=self.get_auth_params())
             # Check if params for OAuth is enough
             self._oauth_is_request_success(login_page_response)
             # Get login form action
             login_action = self._get_form_action(login_page_response)
             # Login using user credentials
-            login_response = auth_session.post(login_action, self.get_login_form_data(login_page_response))
+            login_response = await auth_session.post(login_action, self.get_login_form_data(login_page_response))
 
         if 'remixsid' in auth_session.cookies or 'remixsid6' in auth_session.cookies:
             logger.debug('Successfully logged in')
@@ -301,7 +302,7 @@ class UserAPI(API):
 
         return error
 
-    def auth_captcha_is_needed(self, auth_session, response):
+    async def auth_captcha_is_needed(self, auth_session, response):
         # Get login form action
         login_action = self._get_form_action(response)
 
@@ -313,10 +314,10 @@ class UserAPI(API):
             'captcha_sid': captcha_error.captcha_sid,
             'captcha_key': self.get_captcha_key(captcha_error)
         }
-        login_response = auth_session.post(login_action, login_form_data)
+        login_response = await auth_session.post(login_action, login_form_data)
 
         # Re-login with solved captcha
-        return self.login(auth_session, login_response)
+        return await self.login(auth_session, login_response)
 
     def get_auth_check_code(self):
         """Callback to retrieve authentication check code (if account supports 2FA). Default
@@ -328,12 +329,12 @@ class UserAPI(API):
         """
         raise NotImplementedError
 
-    def auth_check_is_needed(self, auth_session, response):
+    async def auth_check_is_needed(self, auth_session, response):
         auth_check_action = self.LOGIN_URL + self._get_form_action(response)
-        login_response = auth_session.post(auth_check_action, {'code': self.get_auth_check_code()})
+        login_response = await auth_session.post(auth_check_action, {'code': self.get_auth_check_code()})
 
         # Re-login with auth check code
-        return self.login(auth_session, login_response)
+        return await self.login(auth_session, login_response)
 
     def phone_number_is_needed(self, auth_session, response):  # noqa: U100
         raise NotImplementedError
@@ -346,10 +347,10 @@ class UserAPI(API):
             'response_type': 'token',
         }
 
-    def authorize(self, auth_session):
+    async def authorize(self, auth_session):
         logger.debug('Start of the OAuth authorization process')
         # Ask access
-        ask_access_response = auth_session.post(self.AUTHORIZE_URL, self.get_auth_params())
+        ask_access_response = await auth_session.post(self.AUTHORIZE_URL, self.get_auth_params())
         self._oauth_is_request_success(ask_access_response)
         url_queries = self._get_url_queries(ask_access_response.url)
 
@@ -357,7 +358,7 @@ class UserAPI(API):
             logger.debug('Grant access to app')
             # Grant access
             grant_access_action = self._get_form_action(ask_access_response)
-            grant_access_response = auth_session.post(grant_access_action)
+            grant_access_response = await auth_session.post(grant_access_action)
             url_queries = self._get_url_queries(grant_access_response.url)
 
         url_queries = self._get_url_queries(urllib.parse.unquote(url_queries['authorize_url']))
@@ -448,9 +449,9 @@ class DirectUserAPI(UserAPI):
             '2fa_supported': 1
         }
 
-    def authorize(self, auth_session):
+    async def authorize(self, auth_session):
         logger.debug('Start of the OAuth authorization process')
-        auth_response = auth_session.post(self.AUTHORIZE_URL, self._get_auth_params())
+        auth_response = await auth_session.post(self.AUTHORIZE_URL, self._get_auth_params())
         response_params = auth_response.json()
 
         if 'error' in response_params:
@@ -464,8 +465,8 @@ class DirectUserAPI(UserAPI):
         logger.debug('Successfully authorized')
         return response_params['access_token']
 
-    def auth_check_is_needed(self, auth_session, response_params):
-        validation_page_response = auth_session.get(response_params['redirect_uri'])
+    async def auth_check_is_needed(self, auth_session, response_params):
+        validation_page_response = await auth_session.get(response_params['redirect_uri'])
         url_queries = self._get_url_queries(validation_page_response.url)
 
         # Resend auth check code until it's correct
@@ -475,7 +476,7 @@ class DirectUserAPI(UserAPI):
             validation_action_url = self.LOGIN_URL + self._get_form_action(validation_page_response)
 
             auth_check_code = self.get_auth_check_code()
-            validation_response = auth_session.post(validation_action_url, {'code': auth_check_code})
+            validation_response = await auth_session.post(validation_action_url, {'code': auth_check_code})
             url_queries = self._get_url_queries(validation_response.url)
 
             # CAPTCHA input required, resend until it's correct
@@ -487,7 +488,7 @@ class DirectUserAPI(UserAPI):
                     *self._get_auth_captcha_data(validation_page_response)
                 )
 
-                captcha_check_response = auth_session.post(captcha_action_url, {
+                captcha_check_response = await auth_session.post(captcha_action_url, {
                     'code': auth_check_code,
                     'captcha_sid': captcha_error.captcha_sid,
                     'captcha_key': self.get_captcha_key(captcha_error)
@@ -496,7 +497,7 @@ class DirectUserAPI(UserAPI):
 
         return self._process_auth_url_queries(url_queries)
 
-    def auth_captcha_is_needed(self, auth_session, response_params):
+    async def auth_captcha_is_needed(self, auth_session, response_params):
         while response_params.get('error') == 'need_captcha':
             logger.debug('Auth captcha is needed')
 
@@ -505,7 +506,7 @@ class DirectUserAPI(UserAPI):
                 response_params['captcha_img']
             )
 
-            response_params = auth_session.post(
+            response_params = await auth_session.post(
                 self.AUTHORIZE_URL,
                 params={
                     'captcha_sid': captcha_error.captcha_sid,
