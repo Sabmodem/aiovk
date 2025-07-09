@@ -1,5 +1,7 @@
 # vk | python vk.com API wrapper
 
+# NOTICE! This fork modifies the lib for provide async support. The support was achieved by replacing requests lib with httpx
+
 [![Maintanance](https://img.shields.io/maintenance/yes/2023?style=flat-square)](https://github.com/voronind/vk/commits/master)
 [![PyPI](https://img.shields.io/pypi/pyversions/vk?style=flat-square)](https://pypi.org/project/vk/)
 [![GitHub CI](https://img.shields.io/github/actions/workflow/status/voronind/vk/check.yml?branch=master&style=flat-square)](https://github.com/voronind/vk/actions)
@@ -10,22 +12,18 @@ This is a vk.com (the largest Russian social network) python API wrapper. <br>
 The goal is to support all API methods (current and future) that can be accessed from server.
 
 
-## Quickstart
-
-
-### Install
-
-```bash
-pip install vk
-```
-
-
 ### Usage
 
 ```python
->>> import vk
->>> api = vk.API(access_token='...')
->>> api.users.get(user_ids=1)
+import asyncio
+import vk
+api = vk.API(access_token='...')
+
+async def main():
+  result = await api.users.get(user_ids=1)
+  print(result)
+
+asyncio.run(main())
 [{'id': 1, 'first_name': 'Pavel', 'last_name': 'Durov', ... }]
 ```
 
